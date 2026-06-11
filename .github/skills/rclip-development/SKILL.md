@@ -1,15 +1,15 @@
 ---
 name: rclip-development
 description: >
-  Guide for developing, testing, and maintaining the rclip codebase.
-  Use this skill whenever working on rclip source code, tests, or CI workflows.
+  Guide for using the rclip CLI to search a local photo library with natural-language or image queries.
+  Use this skill when an agent needs to search for images on disk using rclip.
 license: MIT
-version: 1.0.0
+version: 2.0.0
 author: Jelloeater
 tags:
-  - python
-  - ai
+  - cli
   - image-search
+  - ai
   - clip
   - computer-vision
 platforms:
@@ -18,68 +18,102 @@ platforms:
   - windows
 ---
 
-## Project Overview
+## What is rclip?
 
-**rclip** is a semantic photo-search CLI tool powered by OpenCLIP's ViT-B/32 model. It builds a local SQLite index of image feature vectors and searches them with natural-language text or image queries — entirely on-device.
+**rclip** is a semantic photo-search CLI tool. It lets you search a local image library using natural-language descriptions, similar images, or a mix of both — entirely on-device with no cloud uploads.
 
-Key source files:
-
-| File | Purpose |
-|------|---------|
-| `rclip/main.py` | Core `RClip` class (indexing + search) and CLI entry point |
-| `rclip/model.py` | CLIP/ONNX model wrapper — computes image & text feature vectors |
-| `rclip/db.py` | SQLite database layer — stores image paths, metadata, and vectors |
-| `rclip/fs.py` | Filesystem walker that discovers image files |
-| `rclip/const.py` | Supported image extensions (`IMAGE_EXT`, `IMAGE_RAW_EXT`) |
-| `rclip/utils/helpers.py` | CLI argument parser, path utilities |
-| `rclip/utils/preview.py` | In-terminal image previews (iTerm2, Konsole, wezterm, …) |
-
-## Environment Setup
-
-This project uses [uv](https://docs.astral.sh/uv/) for dependency management (Python 3.11–3.13 required).
+## Installation
 
 ```bash
-uv sync          # install all dependencies (dev group included by default)
+# Linux (snap)
+sudo snap install rclip
+
+# macOS (Homebrew, Apple Silicon only)
+brew install yurijmikhalevich/tap/rclip
+
+# Any platform (pip)
+pip install rclip
 ```
 
-## Linting
+On the first run in a directory rclip builds a search index. Subsequent runs only reprocess new or changed images.
+
+## Basic Usage
+
+Run rclip from the directory that contains your images (or pass a path with `--dir`):
 
 ```bash
-make lint        # runs both style and type checks
-make lint-style  # ruff check (style)
-make lint-types  # ty check (type checker)
-make fix-style   # auto-fix style issues with ruff
+cd /path/to/photos
+rclip "search query"
 ```
 
-Configuration lives in `pyproject.toml` under `[tool.ruff]` and `[tool.ty]`. Line length is 120, indent width is 2.
+Default output (score + filepath, top 10 results):
 
-## Testing
+```
+score  filepath
+0.297  /photos/sunrise-beach.jpg
+0.286  /photos/dawn-walk.png
+0.274  /photos/morning-hike.heic
+```
+
+Higher score = closer match.
+
+## Image-to-Image Search
+
+Pass a local file path (must start with `./`) or an image URL as the query:
 
 ```bash
-make test        # uv run pytest tests/
+rclip ./cat.jpg
+rclip https://example.com/cat.jpg
 ```
 
-Tests live in `tests/`. End-to-end tests (`tests/e2e/`) require real image files and are skipped unless `RCLIP_TEST_RUN_SYSTEM_RCLIP=true`.
+## Combined & Arithmetic Queries
 
-When adding or changing features, update or add tests in `tests/` accordingly.
+Mix and weight text and image queries with `+` / `-`:
 
-## Architecture Notes
+```bash
+rclip horse + stripes               # horses that have stripes
+rclip apple - fruit                 # apple-like things that aren't fruit
+rclip "./city.jpg" + night          # similar to city.jpg but at night
+rclip "2:golden retriever" + "./pool.jpg"   # weight a term with a multiplier
+rclip "./racing-car.jpg" - "2:sports car" + "2:snow"
+```
 
-- **Feature vectors** are stored as raw `float32` bytes in SQLite. `numpy.frombuffer` / `.tobytes()` are used to serialise/deserialise.
-- **Incremental indexing**: images are re-indexed only when `mtime` or `size` changes. A "flagging" approach marks images as being indexed, then clears the flag on re-visit, so stale entries can be removed.
-- **Query arithmetic**: queries like `"2:golden retriever" + "./pool.jpg" - fruit` are parsed in `rclip/utils/helpers.py` and resolved to weighted positive/negative feature vectors.
-- **RAW support** is opt-in via `--experimental-raw-support`; RAW files are skipped if a processed sidecar exists alongside them.
-- **Model download**: the ONNX model is fetched from Hugging Face Hub on first use (`rclip/model_download.py`).
+Multipliers (`2:`, `0.5:`) scale how strongly a term influences the result. Image queries are typically weighted higher than text ones, so a `0.5:` prefix can help balance mixed queries.
 
-## Conventional Commits
+## Key Flags
 
-All commits in this repository follow the [Conventional Commits](https://www.conventionalcommits.org/) specification. Use prefixes like `feat:`, `fix:`, `refactor:`, `test:`, `chore:`, `docs:` in commit messages.
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--top N` | `-t N` | Return top N results (default: 10) |
+| `--filepath-only` | `-f` | Print only file paths, no scores or header |
+| `--no-indexing` | `-n` | Skip re-indexing (faster when you know no images changed) |
+| `--exclude-dir DIR` | | Exclude a directory from search (repeatable; overrides defaults: `@eaDir`, `node_modules`, `.git`) |
+| `--experimental-raw-support` | | Enable RAW format support (`arw`, `cr2`, `dng`) |
 
-## CI
+## Supported Image Formats
 
-The CI workflow (`.github/workflows/validate.yaml`) runs on every PR and push to `main`:
+Always indexed: `jpg`, `jpeg`, `png`, `webp`, `heic`, `tiff`, `tif`, `bmp`, `gif`, `jp2`, `pnm`, `pbm`, `pgm`, `ppm`.
 
-1. `lint` — runs `.github/actions/lint`
-2. `test` — matrix across Python 3.11/3.12/3.13 × Linux/macOS/Windows
+RAW formats (`arw`, `cr2`, `dng`) require `--experimental-raw-support`.
 
-Always ensure both `make lint` and `make test` pass locally before committing.
+## Automation & Piping
+
+Use `-f` to emit plain file paths for piping into other tools:
+
+```bash
+# Open top 5 results in the default viewer (Linux)
+rclip -f -t 5 "sunset over the ocean" | xargs -d '\n' -n 1 xdg-open
+
+# Copy top 3 matches to another directory
+rclip -f -t 3 "golden retriever" | xargs -I {} cp {} /path/to/destination
+
+# List matching files for further processing
+rclip -f -t 20 "birthday party" > matches.txt
+```
+
+## Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `RCLIP_DATADIR` | Override the directory where the search index (SQLite DB) is stored |
+| `RCLIP_MODEL_CACHE_DIR` | Override the directory where the ONNX model is cached |
